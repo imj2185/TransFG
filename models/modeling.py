@@ -296,7 +296,7 @@ class VisionTransformer(nn.Module):
             loss = loss_fct(logits.view(-1, self.num_classes), labels.view(-1))
             return loss, logits
         else:
-            return logits, attn_weights
+            return logits
 
     def load_from(self, weights):
         with torch.no_grad():
