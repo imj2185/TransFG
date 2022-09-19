@@ -8,6 +8,7 @@ import random
 import numpy as np
 import time
 import math
+import timeit
 
 from datetime import timedelta
 
@@ -527,6 +528,28 @@ def evaluate(args, model, test_loader):
         
     return val_accuracy
 
+def latency(args, model, test_loader):
+    # Validation!
+    eval_losses = AverageMeter()
+
+    model.eval()
+    all_preds, all_label = [], []
+    epoch_iterator = tqdm(test_loader,
+                          desc="Validating... (loss=X.X)",
+                          bar_format="{l_bar}{r_bar}",
+                          dynamic_ncols=True,
+                          disable=args.local_rank not in [-1, 0])
+    loss_fct = torch.nn.CrossEntropyLoss()
+    start_time = timeit.default_timer()
+    for step, batch in enumerate(epoch_iterator):
+        batch = tuple(t.to(args.device) for t in batch)
+        x, y = batch
+        with torch.no_grad():
+            logits = model(x)
+    evalTime = timeit.default_timer() - start_time
+        
+    return evalTime
+
 def main():
     parser = argparse.ArgumentParser()
     # Required parameters
@@ -607,6 +630,8 @@ def main():
     parser.add_argument("--do_search", action="store_true", 
                         help="do evo search")
     parser.add_argument("--do_distil", action="store_true", 
+                        help="do evo search")
+    parser.add_argument("--do_lat_mem_measure", action="store_true", 
                         help="do evo search")
     parser.add_argument("--evo_path", type=str, default="./evo",
                         help="Where to search for evo results.")
@@ -711,6 +736,73 @@ def main():
             while k < args.crossover_size:
                 if evolution.crossover():
                     k += 1
+
+    if args.do_lat_mem_measure:
+        if args.local_rank != -1:
+            model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
+        _, test_loader = get_loader(args)
+        from pytorch_memlab import MemReporter
+        size = (8, 3, args.img_size, args.img_size)
+        dummy_inputs = (
+            torch.ones(size, dtype=torch.float).to(args.device)
+        )
+
+        param_size = 0
+        for param in model.parameters():
+            param_size += param.nelement() * param.element_size()
+        buffer_size = 0
+        for buffer in model.buffers():
+            buffer_size += buffer.nelement() * buffer.element_size()
+
+        size_all_mb = (param_size + buffer_size) / 1024**2
+        print('model size: {:.3f}MB'.format(size_all_mb))
+
+        if args.dataset == "CUB_200_2011":
+            length_config = (684, 478, 363, 294, 254, 226, 170, 147, 134, 92, 60, 33)
+        elif args.dataset == "car":
+            length_config = (718, 550, 379, 303, 225, 199, 160, 122, 101, 85, 60, 6)
+        elif args.dataset == "nabirds":
+            length_config = (769, 480, 331, 247, 216, 213, 208, 161, 132, 124, 46, 4)
+        elif args.dataset == "dog":
+            length_config = (760, 630, 389, 362, 327, 292, 257, 235, 207, 189, 104, 14)
+
+        reporter = MemReporter(model)
+        output = model(dummy_inputs)
+        reporter.report()
+        
+        evalTime = latency(args, model, test_loader)
+        print('Evaluation done in total {:.3f} secs ({:.3f} sec per example)'.format(evalTime, evalTime / len(test_loader)))
+
+        model.set_length_config(length_config)
+
+        reporter = MemReporter(model)
+        output = model(dummy_inputs)
+        reporter.report()
+
+        evalTime = latency(args, model, test_loader)
+        print('Evaluation done in total {:.3f} secs ({:.3f} sec per example)'.format(evalTime, evalTime / len(test_loader)))
+
+        if args.dataset == "CUB_200_2011":
+            length_config = (750, 705, 588, 415, 296, 286, 262, 153, 149, 145, 89, 15)
+        elif args.dataset == "car":
+            length_config = (783, 737, 681, 574, 446, 444, 423, 382, 368, 326, 295, 190)
+        elif args.dataset == "nabirds":
+            length_config = (784, 715, 563, 522, 409, 352, 325, 312, 276, 184, 146, 135)
+        elif args.dataset == "dog":
+            length_config = (778, 773, 761, 753, 745, 735, 732, 723, 713, 706, 698, 73)
+
+        model.set_length_config(length_config)
+
+        reporter = MemReporter(model)
+        output = model(dummy_inputs)
+        reporter.report()
+
+        evalTime = latency(args, model, test_loader)
+        print('Evaluation done in total {:.3f} secs ({:.3f} sec per example)'.format(evalTime, evalTime / len(test_loader)))
+
+        
+
+
 
 if __name__ == "__main__":
     main()
