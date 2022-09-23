@@ -635,6 +635,8 @@ def main():
                         help="do evo search")
     parser.add_argument("--evo_path", type=str, default="./evo",
                         help="Where to search for evo results.")
+    parser.add_argument("--run_cpu", action="store_true", 
+                        help="do evo search")
 
     parser.add_argument('--population_size', type=int, default=20,
                         help="evo search population size\n")
