@@ -98,7 +98,10 @@ def setup(args):
 
     model.load_from(np.load(args.pretrained_dir))
     if args.pretrained_model is not None:
-        pretrained_model = torch.load(args.pretrained_model)['model']
+        if args.run_cpu:
+            pretrained_model = torch.load(args.pretrained_model,  map_location=torch.device('cpu'))['model']
+        else:
+            pretrained_model = torch.load(args.pretrained_model)['model']
         model.load_state_dict(pretrained_model)
     model.to(args.device)
     num_params = count_parameters(model)
@@ -655,14 +658,18 @@ def main():
     #     raise NotImplementedError("label smoothing not supported for fp16 training now")
     args.data_root = '{}/{}'.format(args.data_root, args.dataset)
     # Setup CUDA, GPU & distributed training
-    if args.local_rank == -1:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        args.n_gpu = torch.cuda.device_count()
-    else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device("cuda", args.local_rank)
-        torch.distributed.init_process_group(backend='nccl',
-                                             timeout=timedelta(minutes=60))
+    if args.run_cpu:
+        device = torch.device("cpu")
+        args.n_gpu = 0
+    else:
+        if args.local_rank == -1:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            args.n_gpu = torch.cuda.device_count()
+        else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+            torch.cuda.set_device(args.local_rank)
+            device = torch.device("cuda", args.local_rank)
+            torch.distributed.init_process_group(backend='nccl',
+                                                timeout=timedelta(minutes=60))
         args.n_gpu = 1
     args.device = device
     args.nprocs = torch.cuda.device_count()
