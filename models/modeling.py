@@ -7,12 +7,14 @@ import copy
 import logging
 import math
 
-from os.path import join as pjoin
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+
+from os.path import join
+from os.path import normpath
+import platform
 
 from torch.nn import CrossEntropyLoss, Dropout, Softmax, Linear, Conv2d, LayerNorm
 from torch.nn.modules.utils import _pair
@@ -30,6 +32,14 @@ FC_0 = "MlpBlock_3/Dense_0"
 FC_1 = "MlpBlock_3/Dense_1"
 ATTENTION_NORM = "LayerNorm_0"
 MLP_NORM = "LayerNorm_2"
+
+
+def pjoin(path, *paths):#add support for windows
+    p = join(path, *paths)
+    if platform.system() == "Windows":
+        return normpath(p).replace('\\','/')
+    else:
+        return p
 
 def np2th(weights, conv=False):
     """Possibly convert HWIO to OIHW."""
@@ -65,8 +75,9 @@ class LabelSmoothing(nn.Module):
         return loss.mean()
 
 class Attention(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, vis):
         super(Attention, self).__init__()
+        self.vis = vis
         self.num_attention_heads = config.transformer["num_heads"]
         self.attention_head_size = int(config.hidden_size / self.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
@@ -98,7 +109,7 @@ class Attention(nn.Module):
         attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         attention_probs = self.softmax(attention_scores)
-        weights = attention_probs
+        weights = attention_probs if self.vis else None
         attention_probs = self.attn_dropout(attention_probs)
 
         context_layer = torch.matmul(attention_probs, value_layer)
@@ -175,13 +186,13 @@ class Embeddings(nn.Module):
         return embeddings
 
 class Block(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, vis):
         super(Block, self).__init__()
         self.hidden_size = config.hidden_size
         self.attention_norm = LayerNorm(config.hidden_size, eps=1e-6)
         self.ffn_norm = LayerNorm(config.hidden_size, eps=1e-6)
         self.ffn = Mlp(config)
-        self.attn = Attention(config)
+        self.attn = Attention(config, vis)
 
     def forward(self, x):
         h = x
@@ -246,79 +257,78 @@ class Part_Attention(nn.Module):
         _, max_inx = last_map.max(2)
         return _, max_inx
 
+def entropy(x):
+    # x: torch.Tensor, logits BEFORE softmax
+    exp_x = torch.exp(x)
+    A = torch.sum(exp_x, dim=1)    # sum of exp(x_i)
+    B = torch.sum(x*exp_x, dim=1)  # sum of x_i * exp(x_i)
+    return torch.log(A) - B/A
+
 class Encoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, vis):
         super(Encoder, self).__init__()
+        self.vis = vis
         self.layer = nn.ModuleList()
-        for _ in range(config.transformer["num_layers"] - 1):
-            layer = Block(config)
+        self.encoder_norm = LayerNorm(config.hidden_size, eps=1e-6)
+        for _ in range(config.transformer["num_layers"]):
+            layer = Block(config, vis)
             self.layer.append(copy.deepcopy(layer))
-        self.part_select = Part_Attention()
-        self.part_layer = Block(config)
-        self.part_norm = LayerNorm(config.hidden_size, eps=1e-6)
 
     def forward(self, hidden_states):
         attn_weights = []
-        for layer in self.layer:
-            hidden_states, weights = layer(hidden_states)
-            attn_weights.append(weights)            
-        part_num, part_inx = self.part_select(attn_weights)
-        part_inx = part_inx + 1
-        parts = []
-        B, num = part_inx.shape
-        for i in range(B):
-            parts.append(hidden_states[i, part_inx[i,:]])
-        parts = torch.stack(parts).squeeze(1)
-        concat = torch.cat((hidden_states[:,0].unsqueeze(1), parts), dim=1)
-        part_states, part_weights = self.part_layer(concat)
-        part_encoded = self.part_norm(part_states)   
-
-        return part_encoded
+        for i, layer_block in enumerate(self.layer):
+            hidden_states, weights = layer_block(hidden_states)
+            if self.vis:
+                attn_weights.append(weights)
+        encoded = self.encoder_norm(hidden_states)
+        return encoded, attn_weights
 
 class Transformer(nn.Module):
-    def __init__(self, config, img_size):
+    def __init__(self, config, img_size, vis):
         super(Transformer, self).__init__()
         self.embeddings = Embeddings(config, img_size=img_size)
-        self.encoder = Encoder(config)
+        self.encoder = Encoder(config, vis)
 
     def forward(self, input_ids):
         embedding_output = self.embeddings(input_ids)
-        part_encoded = self.encoder(embedding_output)
-        return part_encoded
+        encoded, attn_weights = self.encoder(embedding_output)
+        return encoded, attn_weights
 
 class VisionTransformer(nn.Module):
-    def __init__(self, config, img_size=224, num_classes=21843, smoothing_value=0, zero_head=False):
+    def __init__(self, config, img_size=224, num_classes=21843, zero_head=False, vis=False):
         super(VisionTransformer, self).__init__()
         self.num_classes = num_classes
-        self.smoothing_value = smoothing_value
         self.zero_head = zero_head
         self.classifier = config.classifier
-        self.transformer = Transformer(config, img_size)
-        self.part_head = Linear(config.hidden_size, num_classes)
+
+        self.transformer = Transformer(config, img_size, vis)
+        self.head = Linear(config.hidden_size, num_classes)
 
     def forward(self, x, labels=None):
-        part_tokens = self.transformer(x)
-        part_logits = self.part_head(part_tokens[:, 0])
+        x, attn_weights = self.transformer(x)
+        logits = self.head(x[:, 0])
 
         if labels is not None:
-            if self.smoothing_value == 0:
-                loss_fct = CrossEntropyLoss()
-            else:
-                loss_fct = LabelSmoothing(self.smoothing_value)
-            part_loss = loss_fct(part_logits.view(-1, self.num_classes), labels.view(-1))
-            contrast_loss = con_loss(part_tokens[:, 0], labels.view(-1))
-            loss = part_loss + contrast_loss
-            return loss, part_logits
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, self.num_classes), labels.view(-1))
+            return loss, logits
         else:
-            return part_logits
+            return logits
 
     def load_from(self, weights):
         with torch.no_grad():
+            if self.zero_head:
+                nn.init.zeros_(self.head.weight)
+                nn.init.zeros_(self.head.bias)
+            else:
+                self.head.weight.copy_(np2th(weights["head/kernel"]).t())
+                self.head.bias.copy_(np2th(weights["head/bias"]).t())
+
             self.transformer.embeddings.patch_embeddings.weight.copy_(np2th(weights["embedding/kernel"], conv=True))
             self.transformer.embeddings.patch_embeddings.bias.copy_(np2th(weights["embedding/bias"]))
             self.transformer.embeddings.cls_token.copy_(np2th(weights["cls"]))
-            self.transformer.encoder.part_norm.weight.copy_(np2th(weights["Transformer/encoder_norm/scale"]))
-            self.transformer.encoder.part_norm.bias.copy_(np2th(weights["Transformer/encoder_norm/bias"]))
+            self.transformer.encoder.encoder_norm.weight.copy_(np2th(weights["Transformer/encoder_norm/scale"]))
+            self.transformer.encoder.encoder_norm.bias.copy_(np2th(weights["Transformer/encoder_norm/bias"]))
 
             posemb = np2th(weights["Transformer/posembed_input/pos_embedding"])
             posemb_new = self.transformer.embeddings.position_embeddings
@@ -346,9 +356,8 @@ class VisionTransformer(nn.Module):
                 self.transformer.embeddings.position_embeddings.copy_(np2th(posemb))
 
             for bname, block in self.transformer.encoder.named_children():
-                if bname.startswith('part') == False:
-                    for uname, unit in block.named_children():
-                        unit.load_from(weights, n_block=uname)
+                for uname, unit in block.named_children():
+                    unit.load_from(weights, n_block=uname)
 
             if self.transformer.embeddings.hybrid:
                 self.transformer.embeddings.hybrid_model.root.conv.weight.copy_(np2th(weights["conv_root/kernel"], conv=True))
@@ -359,7 +368,7 @@ class VisionTransformer(nn.Module):
 
                 for bname, block in self.transformer.embeddings.hybrid_model.body.named_children():
                     for uname, unit in block.named_children():
-                        unit.load_from(weights, n_block=bname, n_unit=uname) 
+                        unit.load_from(weights, n_block=bname, n_unit=uname)
 
 def con_loss(features, labels):
     B, _ = features.shape
