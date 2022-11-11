@@ -7,20 +7,21 @@ import os
 import random
 import numpy as np
 import time
-import timeit
 
 from datetime import timedelta
 
 import torch
 import torch.distributed as dist
-import torchprofile
+from torch.nn import KLDivLoss
+import torch.nn.functional as F
 
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from apex import amp
 from apex.parallel import DistributedDataParallel as DDP
 
-from models.modeling import VisionTransformer, CONFIGS
+from models.modeling_early_exit import VisionTransformer, CONFIGS
+#from models.modeling import VisionTransformer, CONFIGS
 from utils.scheduler import WarmupLinearSchedule, WarmupCosineSchedule
 from utils.data_utils import get_loader
 from utils.dist_util import get_world_size
@@ -85,14 +86,11 @@ def setup(args):
     elif args.dataset == "INat2017":
         num_classes = 5089
 
-    model = VisionTransformer(config, args.img_size, zero_head=True, num_classes=num_classes,                                                   smoothing_value=args.smoothing_value)
+    model = VisionTransformer(config, args.img_size, zero_head=True, num_classes=num_classes)
 
     model.load_from(np.load(args.pretrained_dir))
     if args.pretrained_model is not None:
-        if args.run_cpu:
-            pretrained_model = torch.load(args.pretrained_model,  map_location=torch.device('cpu'))['model']
-        else:
-            pretrained_model = torch.load(args.pretrained_model)['model']
+        pretrained_model = torch.load(args.pretrained_model)['model']
         model.load_state_dict(pretrained_model)
     model.to(args.device)
     num_params = count_parameters(model)
@@ -117,6 +115,8 @@ def valid(args, model, writer, test_loader, global_step):
     # Validation!
     eval_losses = AverageMeter()
 
+    exit_layers = []
+
     logger.info("***** Running Validation *****")
     logger.info("  Num steps = %d", len(test_loader))
     logger.info("  Batch size = %d", args.eval_batch_size)
@@ -133,13 +133,15 @@ def valid(args, model, writer, test_loader, global_step):
         batch = tuple(t.to(args.device) for t in batch)
         x, y = batch
         with torch.no_grad():
-            logits = model(x)
+            logits, exit_layer = model(x)
 
             eval_loss = loss_fct(logits, y)
             eval_loss = eval_loss.mean()
             eval_losses.update(eval_loss.item())
 
             preds = torch.argmax(logits, dim=-1)
+
+        exit_layers.append(exit_layer)
 
         if len(all_preds) == 0:
             all_preds.append(preds.detach().cpu().numpy())
@@ -156,8 +158,12 @@ def valid(args, model, writer, test_loader, global_step):
     all_preds, all_label = all_preds[0], all_label[0]
     accuracy = simple_accuracy(all_preds, all_label)
     accuracy = torch.tensor(accuracy).to(args.device)
-    dist.barrier()
-    val_accuracy = reduce_mean(accuracy, args.nprocs)
+
+    if args.local_rank == -1: #single GPU case
+        val_accuracy = accuracy
+    else:
+        dist.barrier()
+        val_accuracy = reduce_mean(accuracy, args.nprocs)
     val_accuracy = val_accuracy.detach().cpu().numpy()
 
     logger.info("\n")
@@ -167,7 +173,8 @@ def valid(args, model, writer, test_loader, global_step):
     logger.info("Valid Accuracy: %2.5f" % val_accuracy)
     if args.local_rank in [-1, 0]:
         writer.add_scalar("test/accuracy", scalar_value=val_accuracy, global_step=global_step)
-        
+        writer.add_scalar("test/average_exit_layers", scalar_value=sum(exit_layers)/len(exit_layers), global_step=global_step)
+
     return val_accuracy
 
 def train(args, model):
@@ -216,6 +223,7 @@ def train(args, model):
     losses = AverageMeter()
     global_step, best_acc = 0, 0
     start_time = time.time()
+    num_epochs = 0
     while True:
         model.train()
         epoch_iterator = tqdm(train_loader,
@@ -228,7 +236,14 @@ def train(args, model):
             batch = tuple(t.to(args.device) for t in batch)
             x, y = batch
 
-            loss, logits = model(x, y)
+            inputs = {
+                "x": x,
+                "labels": y,
+            }
+
+            inputs["exit_layer"] = 12
+            inputs["classifier_backward"] = False
+            loss, logits = model(**inputs)
             loss = loss.mean()
 
             preds = torch.argmax(logits, dim=-1)
@@ -252,6 +267,49 @@ def train(args, model):
             else:
                 loss.backward()
 
+            ######distilation######
+            inputs["classifier_backward"] = True
+            for i in range(args.num_sandwich + 1):
+                t_logits = logits.detach()
+
+                # layer_config = sample_layer_configuration(
+                #     args.num_model_layer,
+                #     layer_dropout_prob=args.layer_dropout_prob,
+                #     layer_dropout=(args.layer_dropout_bound if i == 0 else None),
+                #     layer_dropout_bound=args.layer_dropout_bound,
+                # )
+                # inputs["layer_config"] = layer_config
+                #
+                # length_config = sample_length_configuration(
+                #     args.max_seq_length,
+                #     args.num_model_layer,
+                #     layer_config,
+                #     length_drop_ratio=(args.length_drop_ratio_bound if i == 0 else None),
+                #     length_drop_ratio_bound=args.length_drop_ratio_bound,
+                # )
+                # inputs["length_config"] = length_config
+                if i == 0:
+                    inputs["exit_layer"] = 12
+                elif i == args.num_sandwich:
+                    inputs["exit_layer"] = 6
+                else:
+                    inputs["exit_layer"] = random.randint(6, 12)
+                sub_loss, sub_logits = model(**inputs)
+                sub_loss = sub_loss.mean()
+
+                loss_fct = KLDivLoss(reduction="batchmean")
+                t_loss = loss_fct(F.log_softmax(t_logits, -1), F.softmax(sub_logits, -1))
+                t_loss = t_loss / (args.num_sandwich + 2)
+                if args.gradient_accumulation_steps > 1:
+                    t_loss = t_loss / args.gradient_accumulation_steps
+                if args.fp16:
+                    with amp.scale_loss(t_loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    t_loss.backward(retain_graph=True)
+                    sub_loss.backward()
+            ######distilation######
+
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 losses.update(loss.item()*args.gradient_accumulation_steps)
                 if args.fp16:
@@ -268,13 +326,18 @@ def train(args, model):
                 )
                 if args.local_rank in [-1, 0]:
                     writer.add_scalar("train/loss", scalar_value=losses.val, global_step=global_step)
+                    # if num_epochs % 2 == 0:
+                    #     writer.add_scalar("train/loss", scalar_value=losses.val, global_step=global_step)
+                    # else:
+                    #     writer.add_scalar("train/early_exit_loss", scalar_value=losses.val, global_step=global_step)
                     writer.add_scalar("train/lr", scalar_value=scheduler.get_lr()[0], global_step=global_step)
                 if global_step % args.eval_every == 0:
                     with torch.no_grad():
                         accuracy = valid(args, model, writer, test_loader, global_step)
                     if args.local_rank in [-1, 0]:
+                        save_model(args, model)
                         if best_acc < accuracy:
-                            save_model(args, model)
+                            # save_model(args, model)
                             best_acc = accuracy
                         logger.info("best accuracy so far: %f" % best_acc)
                     model.train()
@@ -284,11 +347,17 @@ def train(args, model):
         all_preds, all_label = all_preds[0], all_label[0]
         accuracy = simple_accuracy(all_preds, all_label)
         accuracy = torch.tensor(accuracy).to(args.device)
-        dist.barrier()
-        train_accuracy = reduce_mean(accuracy, args.nprocs)
+
+        if args.local_rank == -1: #single GPU case
+            train_accuracy = accuracy
+        else:
+            dist.barrier()
+            train_accuracy = reduce_mean(accuracy, args.nprocs)
         train_accuracy = train_accuracy.detach().cpu().numpy()
+        writer.add_scalar("train/accuracy", scalar_value=train_accuracy, global_step=global_step)
         logger.info("train accuracy so far: %f" % train_accuracy)
         losses.reset()
+        num_epochs += 1
         if global_step % t_total == 0:
             break
 
@@ -298,41 +367,56 @@ def train(args, model):
     end_time = time.time()
     logger.info("Total Training Time: \t%f" % ((end_time - start_time) / 3600))
 
-def latency(args, model, test_loader):
-    # Validation!
-    eval_losses = AverageMeter()
+def distil(args, logits, inputs, model, optimizer):
+    for i in range(args.num_sandwich + 1):
+        t_logits = logits.detach()
 
-    model.eval()
-    all_preds, all_label = [], []
-    epoch_iterator = tqdm(test_loader,
-                          desc="Validating... (loss=X.X)",
-                          bar_format="{l_bar}{r_bar}",
-                          dynamic_ncols=True,
-                          disable=args.local_rank not in [-1, 0])
-    loss_fct = torch.nn.CrossEntropyLoss()
-    start_time = timeit.default_timer()
-    for step, batch in enumerate(epoch_iterator):
-        batch = tuple(t.to(args.device) for t in batch)
-        x, y = batch
-        with torch.no_grad():
-            logits = model(x)
-    evalTime = timeit.default_timer() - start_time
+        # layer_config = sample_layer_configuration(
+        #     args.num_model_layer,
+        #     layer_dropout_prob=args.layer_dropout_prob,
+        #     layer_dropout=(args.layer_dropout_bound if i == 0 else None),
+        #     layer_dropout_bound=args.layer_dropout_bound,
+        # )
+        # inputs["layer_config"] = layer_config
+        #
+        # length_config = sample_length_configuration(
+        #     args.max_seq_length,
+        #     args.num_model_layer,
+        #     layer_config,
+        #     length_drop_ratio=(args.length_drop_ratio_bound if i == 0 else None),
+        #     length_drop_ratio_bound=args.length_drop_ratio_bound,
+        # )
+        # inputs["length_config"] = length_config
 
-    return evalTime
+        inputs["exit_layer"] = random.randint(6,12)
+
+        sub_loss, sub_logits = model(**inputs)
+        sub_loss = sub_loss.mean()
+
+        loss_fct = KLDivLoss(reduction="batchmean")
+        loss = loss_fct(F.log_softmax(t_logits, -1), F.softmax(sub_logits, -1))
+        loss = loss / (args.num_sandwich + 2)
+        if args.gradient_accumulation_steps > 1:
+            loss = loss / args.gradient_accumulation_steps
+        if args.fp16:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
 
 def main():
     parser = argparse.ArgumentParser()
     # Required parameters
-    parser.add_argument("--name", required=True,
+    parser.add_argument("--name", required=False, default='vit_distil_v3_2',
                         help="Name of this run. Used for monitoring.")
     parser.add_argument("--dataset", choices=["CUB_200_2011", "car", "dog", "nabirds", "INat2017"], default="CUB_200_2011",
                         help="Which dataset.")
-    parser.add_argument('--data_root', type=str, default='./dataset')
+    parser.add_argument('--data_root', type=str, default='D:/Datasets/CUB_200_2011')
     parser.add_argument("--model_type", choices=["ViT-B_16", "ViT-B_32", "ViT-L_16",
                                                  "ViT-L_32", "ViT-H_14"],
                         default="ViT-B_16",
                         help="Which variant to use.")
-    parser.add_argument("--pretrained_dir", type=str, default="./pretrained/ViT-B_16.npz",
+    parser.add_argument("--pretrained_dir", type=str, default="D:/Research Projects/Early_Exit/TransFG-adaptive/pretrained/imagenet21k_ViT-B_16.npz",
                         help="Where to search for pretrained ViT models.")
     parser.add_argument("--pretrained_model", type=str, default=None,
                         help="load pretrained model")
@@ -385,12 +469,8 @@ def main():
     parser.add_argument('--slide_step', type=int, default=12,
                         help="Slide step for overlap split")
 
-    parser.add_argument("--do_lat_mem_measure", action="store_true", 
-                        help="do evo search")
-    parser.add_argument("--do_mac", action="store_true", 
-                        help="do evo search")
-    parser.add_argument("--run_cpu", action="store_true", 
-                        help="do evo search")
+    parser.add_argument('--num_sandwich', type=int, default=2,
+                        help="number of sandwiches\n")
 
     args = parser.parse_args()
 
@@ -398,18 +478,14 @@ def main():
     #     raise NotImplementedError("label smoothing not supported for fp16 training now")
     args.data_root = '{}/{}'.format(args.data_root, args.dataset)
     # Setup CUDA, GPU & distributed training
-    if args.run_cpu:
-        device = torch.device("cpu")
-        args.n_gpu = 0
-    else:
-        if args.local_rank == -1:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            args.n_gpu = torch.cuda.device_count()
-        else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-            torch.cuda.set_device(args.local_rank)
-            device = torch.device("cuda", args.local_rank)
-            torch.distributed.init_process_group(backend='nccl',
-                                                timeout=timedelta(minutes=60))
+    if args.local_rank == -1:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        args.n_gpu = torch.cuda.device_count()
+    else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+        torch.cuda.set_device(args.local_rank)
+        device = torch.device("cuda", args.local_rank)
+        torch.distributed.init_process_group(backend='nccl',
+                                             timeout=timedelta(minutes=60))
         args.n_gpu = 1
     args.device = device
     args.nprocs = torch.cuda.device_count()
@@ -427,48 +503,7 @@ def main():
     # Model & Tokenizer Setup
     args, model = setup(args)
     # Training
-    #train(args, model)
-    if args.do_lat_mem_measure:
-        if args.local_rank != -1:
-            model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
-        _, test_loader = get_loader(args)
-        from pytorch_memlab import MemReporter
-        size = (8, 3, args.img_size, args.img_size)
-        dummy_inputs = (
-            torch.ones(size, dtype=torch.float).to(args.device)
-        )
-
-        param_size = 0
-        for param in model.parameters():
-            param_size += param.nelement() * param.element_size()
-        buffer_size = 0
-        for buffer in model.buffers():
-            buffer_size += buffer.nelement() * buffer.element_size()
-
-        size_all_mb = (param_size + buffer_size) / 1024**2
-        print('model size: {:.3f}MB'.format(size_all_mb))
-
-        reporter = MemReporter(model)
-        output = model(dummy_inputs)
-        reporter.report()
-
-        # mac = torchprofile.profile_macs(model, args=dummy_inputs)
-        # print("MACs: ", mac)
-        
-        evalTime = latency(args, model, test_loader)
-        print('Evaluation done in total {:.3f} secs ({:.3f} sec per example)'.format(evalTime, evalTime / len(test_loader)))
-
-    if args.do_mac:
-        if args.local_rank != -1:
-            model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
-        _, test_loader = get_loader(args)
-        size = (8, 3, args.img_size, args.img_size)
-        dummy_inputs = (
-            torch.ones(size, dtype=torch.float).to(args.device)
-        )
-        mac = torchprofile.profile_macs(model, args=dummy_inputs)
-        print("MACs: ", mac)
-
+    train(args, model)
 
 if __name__ == "__main__":
     main()
