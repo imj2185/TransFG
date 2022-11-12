@@ -411,12 +411,12 @@ def main():
                         help="Name of this run. Used for monitoring.")
     parser.add_argument("--dataset", choices=["CUB_200_2011", "car", "dog", "nabirds", "INat2017"], default="CUB_200_2011",
                         help="Which dataset.")
-    parser.add_argument('--data_root', type=str, default='D:/Datasets/CUB_200_2011')
+    parser.add_argument('--data_root', type=str, default='./dataset')
     parser.add_argument("--model_type", choices=["ViT-B_16", "ViT-B_32", "ViT-L_16",
                                                  "ViT-L_32", "ViT-H_14"],
                         default="ViT-B_16",
                         help="Which variant to use.")
-    parser.add_argument("--pretrained_dir", type=str, default="D:/Research Projects/Early_Exit/TransFG-adaptive/pretrained/imagenet21k_ViT-B_16.npz",
+    parser.add_argument("--pretrained_dir", type=str, default="./pretrained_model/ViT-B_16.npz",
                         help="Where to search for pretrained ViT models.")
     parser.add_argument("--pretrained_model", type=str, default=None,
                         help="load pretrained model")

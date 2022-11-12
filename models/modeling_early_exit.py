@@ -242,7 +242,7 @@ class VisionTransformer(nn.Module):
                             torch.argmax(layer_early_exit_output, dim=1),
                             labels
                         )  # 0 for wrong/continue, 1 for right/exit
-                        correctness_loss = 1 - lte_gold  # 1 for continue, match exit_pred
+                        correctness_loss = ~(lte_gold)  # 1 for continue, match exit_pred
                     layer_acc.append(correctness_loss)
 
                 exit_pred = torch.stack(exit_pred)
