@@ -367,7 +367,7 @@ def distil(args, model):
     end_time = time.time()
     logger.info("Total Training Time: \t%f" % ((end_time - start_time) / 3600))
 
-def train(args, logits, inputs, model, optimizer):
+def train(args, model):
     if args.local_rank in [-1, 0]:
         os.makedirs(args.output_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=os.path.join("logs", args.name))
