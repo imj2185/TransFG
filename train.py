@@ -682,12 +682,12 @@ def main():
             model.module.set_early_exit_th(early_exit_th)
             with torch.no_grad():
                 val_accuracy, exit_layer = finetune(args, model, test_loader, early_exit_th)
-                print('early_exit_th = ' + str(early_exit_th))
-                print('val_accuracy = ' + str(val_accuracy))
-                print('exit_layer = ' + str(exit_layer))
                 accuracy.append(val_accuracy)
                 exit_layers.append(exit_layer)
                 early_exit_threshold.append(early_exit_th)
+            print('early_exit_th = ' + str(early_exit_th))
+            print('val_accuracy = ' + str(val_accuracy))
+            print('exit_layer = ' + str(exit_layer))
 
         with open(os.path.join("finetune_logs", args.name)+'.csv', 'w', encoding='UTF8', newline='') as f:
             writer = csv.writer(f)
