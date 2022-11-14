@@ -679,7 +679,7 @@ def main():
         early_exit_threshold = []
         for i in range(101):
             early_exit_th = i/100000
-            model.set_early_exit_th(early_exit_th)
+            model.module.set_early_exit_th(early_exit_th)
             with torch.no_grad():
                 val_accuracy, exit_layer = finetune(args, model, test_loader, early_exit_th)
                 print('early_exit_th = ' + str(early_exit_th))
