@@ -211,6 +211,9 @@ class VisionTransformer(nn.Module):
         self.num_layers = config.transformer["num_layers"]
         self.train_strategy = train_strategy
 
+    def set_early_exit_th(self, early_exit_th):
+        self.transformer.encoder.lte_th = [early_exit_th] * self.num_layers
+
     def forward(self, x, labels=None, exit_layer=12, classifier_backward=False):
         if labels is not None:
             all_early_exit_loss = []

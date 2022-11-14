@@ -70,7 +70,7 @@ def save_model(args, model):
     torch.save(checkpoint, model_checkpoint)
     logger.info("Saved model checkpoint to [DIR: %s]", args.output_dir)
 
-def setup(args, early_exit_th):
+def setup(args):
     # Prepare model
     config = CONFIGS[args.model_type]
     config.split = args.split
@@ -510,7 +510,7 @@ def train(args, model):
     end_time = time.time()
     logger.info("Total Training Time: \t%f" % ((end_time - start_time) / 3600))
 
-def finetune(args, model, test_loader):
+def finetune(args, model, test_loader, early_exit_th):
     # Validation!
     eval_losses = AverageMeter()
     exit_layers = []
@@ -679,9 +679,9 @@ def main():
         early_exit_threshold = []
         for i in range(101):
             early_exit_th = i/100000
-            args, model = setup(args, early_exit_th)
+            model.set_early_exit_th(early_exit_th)
             with torch.no_grad():
-                val_accuracy, exit_layer = finetune(args, model, test_loader)
+                val_accuracy, exit_layer = finetune(args, model, test_loader, early_exit_th)
                 print('early_exit_th = ' + str(early_exit_th))
                 print('val_accuracy = ' + str(val_accuracy))
                 print('exit_layer = ' + str(exit_layer))
