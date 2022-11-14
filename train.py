@@ -70,7 +70,7 @@ def save_model(args, model):
     torch.save(checkpoint, model_checkpoint)
     logger.info("Saved model checkpoint to [DIR: %s]", args.output_dir)
 
-def setup(args):
+def setup(args, early_exit_th):
     # Prepare model
     config = CONFIGS[args.model_type]
     config.split = args.split
