@@ -7,6 +7,7 @@ import os
 import random
 import numpy as np
 import time
+import csv
 
 from datetime import timedelta
 
@@ -509,6 +510,55 @@ def train(args, model):
     end_time = time.time()
     logger.info("Total Training Time: \t%f" % ((end_time - start_time) / 3600))
 
+def finetune(args, model, test_loader):
+    # Validation!
+    eval_losses = AverageMeter()
+    exit_layers = []
+
+    model.eval()
+    all_preds, all_label = [], []
+    epoch_iterator = tqdm(test_loader,
+                          desc="Validating... (loss=X.X)",
+                          bar_format="{l_bar}{r_bar}",
+                          dynamic_ncols=True,
+                          disable=False)
+    loss_fct = torch.nn.CrossEntropyLoss()
+    for step, batch in enumerate(epoch_iterator):
+        batch = tuple(t.to(args.device) for t in batch)
+        x, y = batch
+        with torch.no_grad():
+            logits, exit_layer = model(x)
+            eval_loss = loss_fct(logits, y)
+            eval_loss = eval_loss.mean()
+            eval_losses.update(eval_loss.item())
+
+            preds = torch.argmax(logits, dim=-1)
+
+        exit_layers.append(exit_layer)
+
+        if len(all_preds) == 0:
+            all_preds.append(preds.detach().cpu().numpy())
+            all_label.append(y.detach().cpu().numpy())
+        else:
+            all_preds[0] = np.append(
+                all_preds[0], preds.detach().cpu().numpy(), axis=0
+            )
+            all_label[0] = np.append(
+                all_label[0], y.detach().cpu().numpy(), axis=0
+            )
+        epoch_iterator.set_description("Validating... (loss=%2.5f)" % eval_losses.val)
+        epoch_iterator.set_postfix(exit_layer=exit_layer)
+
+    all_preds, all_label = all_preds[0], all_label[0]
+    accuracy = simple_accuracy(all_preds, all_label)
+    accuracy = torch.tensor(accuracy).to(args.device)
+    dist.barrier()
+    val_accuracy = reduce_mean(accuracy, args.nprocs)
+
+    val_accuracy = val_accuracy.detach().cpu().numpy()
+
+    return val_accuracy, sum(exit_layers)/len(exit_layers)
+
 def main():
     parser = argparse.ArgumentParser()
     # Required parameters
@@ -581,8 +631,6 @@ def main():
                         help="do evo search")
     parser.add_argument("--distil", action="store_true", 
                         help="do evo search")
-    parser.add_argument("--finetune", action="store_true", 
-                        help="do evo search")
 
     args = parser.parse_args()
 
@@ -620,27 +668,30 @@ def main():
     if args.distil:
         distil(args, model)
     if args.finetune:
+        if args.local_rank != -1:
+            model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
+        _, test_loader = get_loader(args)
+        
         accuracy = []
         exit_layers = []
         early_exit_threshold = []
-        for i in range(1001):
+        for i in range(101):
             early_exit_th = i/100000
             args, model = setup(args, early_exit_th)
             with torch.no_grad():
-                val_accuracy, exit_layer = valid(args, model, test_loader)
+                val_accuracy, exit_layer = finetune(args, model, test_loader)
                 print('early_exit_th = ' + str(early_exit_th))
                 print('val_accuracy = ' + str(val_accuracy))
                 print('exit_layer = ' + str(exit_layer))
                 accuracy.append(val_accuracy)
                 exit_layers.append(exit_layer)
                 early_exit_threshold.append(early_exit_th)
-            
-            with open(os.path.join("finetune_logs", args.name)+'.csv', 'w', encoding='UTF8', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(accuracy)
-                writer.writerow(exit_layers)
-                writer.writerow(early_exit_threshold)
 
+        with open(os.path.join("finetune_logs", args.name)+'.csv', 'w', encoding='UTF8', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(accuracy)
+            writer.writerow(exit_layers)
+            writer.writerow(early_exit_threshold)
 
 if __name__ == "__main__":
     main()
