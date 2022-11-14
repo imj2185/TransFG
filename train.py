@@ -307,7 +307,7 @@ def distil(args, model):
                         scaled_loss.backward()
                 else:
                     t_loss.backward(retain_graph=True)
-                    sub_loss.backward()
+                    #sub_loss.backward()
             ######distilation######
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -508,6 +508,7 @@ def train(args, model):
     logger.info("End Training!")
     end_time = time.time()
     logger.info("Total Training Time: \t%f" % ((end_time - start_time) / 3600))
+
 def main():
     parser = argparse.ArgumentParser()
     # Required parameters
