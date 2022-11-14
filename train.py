@@ -631,6 +631,8 @@ def main():
                         help="do evo search")
     parser.add_argument("--distil", action="store_true", 
                         help="do evo search")
+    parser.add_argument("--finetune", action="store_true", 
+                        help="do evo search")
 
     args = parser.parse_args()
 
