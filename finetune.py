@@ -6,10 +6,12 @@ import csv
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
+import torch.distributed as dist
 from tqdm import tqdm
 import numpy as np
 
 from models.modeling_early_exit import VisionTransformer, CONFIGS
+from apex.parallel import DistributedDataParallel as DDP
 from utils.data_utils import get_loader
 
 
@@ -36,6 +38,11 @@ def count_parameters(model):
     params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return params / 1000000
 
+def reduce_mean(tensor, nprocs):
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    rt /= nprocs
+    return rt
 
 def simple_accuracy(preds, labels):
     return (preds == labels).mean()
@@ -71,6 +78,8 @@ def setup(args, early_exit_th):
 
 
 def valid(args, model, test_loader):
+    if args.local_rank != -1:
+        model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
     # Validation!
     eval_losses = AverageMeter()
     exit_layers = []
@@ -112,7 +121,8 @@ def valid(args, model, test_loader):
     all_preds, all_label = all_preds[0], all_label[0]
     accuracy = simple_accuracy(all_preds, all_label)
     accuracy = torch.tensor(accuracy).to(args.device)
-    val_accuracy = accuracy
+    dist.barrier()
+    val_accuracy = reduce_mean(accuracy, args.nprocs)
 
     val_accuracy = val_accuracy.detach().cpu().numpy()
 
@@ -152,32 +162,27 @@ def main():
 
 
     train_loader, test_loader = get_loader(args)
-    model_names = ['vit_distil_v3_2', 'vit_distil_v3']
-    model_names = ['vit_distil', 'vit_distil_v3']
-    for model_name in model_names:
-        args.name = model_name
-        args.pretrained_model = os.path.join('D:/Research Projects/Early_Exit/TransFG-baseline/output/',
-                                             args.name) + '_checkpoint.bin'
-        accuracy = []
-        exit_layers = []
-        early_exit_threshold = []
-        for i in range(101):
-            early_exit_th = i/100000
-            args, model = setup(args, early_exit_th)
-            with torch.no_grad():
-                val_accuracy, exit_layer = valid(args, model, test_loader)
-                print('early_exit_th = ' + str(early_exit_th))
-                print('val_accuracy = ' + str(val_accuracy))
-                print('exit_layer = ' + str(exit_layer))
-                accuracy.append(val_accuracy)
-                exit_layers.append(exit_layer)
-                early_exit_threshold.append(early_exit_th)
 
-        with open(os.path.join("finetune_logs", args.name)+'.csv', 'w', encoding='UTF8', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(accuracy)
-            writer.writerow(exit_layers)
-            writer.writerow(early_exit_threshold)
+    accuracy = []
+    exit_layers = []
+    early_exit_threshold = []
+    for i in range(101):
+        early_exit_th = i/100000
+        args, model = setup(args, early_exit_th)
+        with torch.no_grad():
+            val_accuracy, exit_layer = valid(args, model, test_loader)
+            print('early_exit_th = ' + str(early_exit_th))
+            print('val_accuracy = ' + str(val_accuracy))
+            print('exit_layer = ' + str(exit_layer))
+            accuracy.append(val_accuracy)
+            exit_layers.append(exit_layer)
+            early_exit_threshold.append(early_exit_th)
+
+    with open(os.path.join("finetune_logs", args.name)+'.csv', 'w', encoding='UTF8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(accuracy)
+        writer.writerow(exit_layers)
+        writer.writerow(early_exit_threshold)
 
 
 if __name__ == "__main__":

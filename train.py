@@ -581,6 +581,8 @@ def main():
                         help="do evo search")
     parser.add_argument("--distil", action="store_true", 
                         help="do evo search")
+    parser.add_argument("--finetune", action="store_true", 
+                        help="do evo search")
 
     args = parser.parse_args()
 
@@ -617,6 +619,28 @@ def main():
         train(args, model)
     if args.distil:
         distil(args, model)
+    if args.finetune:
+        accuracy = []
+        exit_layers = []
+        early_exit_threshold = []
+        for i in range(1001):
+            early_exit_th = i/100000
+            args, model = setup(args, early_exit_th)
+            with torch.no_grad():
+                val_accuracy, exit_layer = valid(args, model, test_loader)
+                print('early_exit_th = ' + str(early_exit_th))
+                print('val_accuracy = ' + str(val_accuracy))
+                print('exit_layer = ' + str(exit_layer))
+                accuracy.append(val_accuracy)
+                exit_layers.append(exit_layer)
+                early_exit_threshold.append(early_exit_th)
+            
+            with open(os.path.join("finetune_logs", args.name)+'.csv', 'w', encoding='UTF8', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(accuracy)
+                writer.writerow(exit_layers)
+                writer.writerow(early_exit_threshold)
+
 
 if __name__ == "__main__":
     main()
