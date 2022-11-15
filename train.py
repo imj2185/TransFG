@@ -677,8 +677,8 @@ def main():
         accuracy = []
         exit_layers = []
         early_exit_threshold = []
-        for i in range(150):
-            early_exit_th = i*5/50000
+        for i in range(15):
+            early_exit_th = (2**i)/50000
             model.module.set_early_exit_th(early_exit_th)
             with torch.no_grad():
                 val_accuracy, exit_layer = finetune(args, model, test_loader, early_exit_th)
