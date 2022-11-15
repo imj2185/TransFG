@@ -305,6 +305,8 @@ def distil(args, model):
                     t_loss = t_loss / args.gradient_accumulation_steps
                 if args.fp16:
                     with amp.scale_loss(t_loss, optimizer) as scaled_loss:
+                        scaled_loss.backward(retain_graph=True)
+                    with amp.scale_loss(sub_loss, optimizer) as scaled_loss:
                         scaled_loss.backward()
                 else:
                     t_loss.backward(retain_graph=True)
