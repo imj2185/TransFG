@@ -308,7 +308,7 @@ def distil(args, model):
                         scaled_loss.backward()
                 else:
                     t_loss.backward(retain_graph=True)
-                    #sub_loss.backward()
+                    sub_loss.backward()
             ######distilation######
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -678,7 +678,7 @@ def main():
         exit_layers = []
         early_exit_threshold = []
         for i in range(1001):
-            early_exit_th = i/50000
+            early_exit_th = i*5/50000
             model.module.set_early_exit_th(early_exit_th)
             with torch.no_grad():
                 val_accuracy, exit_layer = finetune(args, model, test_loader, early_exit_th)
