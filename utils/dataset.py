@@ -100,6 +100,7 @@ class CarsDataset(Dataset):
 
         self.data_dir = data_dir
         self.transform = transform
+        img_name1 = os.path.join(self.data_dir, self.car_annotations[0][-1][0])
 
     def __len__(self):
         return len(self.car_annotations)
@@ -159,6 +160,7 @@ def find_classes(classes_file):
     targets = [class_to_idx[c] for c in targets]
 
     return (image_ids, targets, classes, class_to_idx)
+
 
 class dogs(Dataset):
     """`Stanford Dogs <http://vision.stanford.edu/aditya86/ImageNetDogs/>`_ Dataset.
@@ -568,3 +570,78 @@ class INat2017(VisionDataset):
             download_url(url, root=self.root, filename=filename)
             if not check_integrity(os.path.join(self.root, filename), md5):
                 raise RuntimeError("File not found or corrupted.")
+
+
+class soyloc_cotton():
+    def __init__(self, root, is_train=True, data_len=None, transform=None):
+        self.root = root
+        self.is_train = is_train
+        self.transform = transform
+        self.mode = 'train' if is_train else 'test'
+        anno_txt_file = open(os.path.join(self.root, 'anno', self.mode + '.txt'))
+        self.labels = []
+        self.imgs_name = []
+        for line in anno_txt_file:
+            self.imgs_name.append(line.strip().split(' ')[0])
+            self.labels.append(int(line.strip().split(' ')[1]) - 1)
+        # self.imgs = [scipy.misc.imread(os.path.join(self.root, 'images', img_name)) for img_name in self.imgs_name ]
+
+    def __getitem__(self, index):
+        img_path = os.path.join(self.root, 'images', self.imgs_name[index])
+        img, target, imgname = matplotlib.pyplot.imread(img_path), self.labels[index], self.imgs_name[index]
+        if len(img.shape) == 2:
+            img = np.stack([img] * 3, 2)
+        img = Image.fromarray(img, mode='RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+
+        return img, target
+
+    def __len__(self):
+        return len(self.imgs_name)
+
+
+class FGVC_aircraft():
+    def __init__(self, root, is_train=True, data_len=None, transform=None):
+        self.root = root
+        self.is_train = is_train
+        self.transform = transform
+        train_img_path = os.path.join(self.root, 'data', 'images')
+        test_img_path = os.path.join(self.root, 'data', 'images')
+        train_label_file = open(os.path.join(self.root, 'data', 'train.txt'))
+        test_label_file = open(os.path.join(self.root, 'data', 'test.txt'))
+        train_img_label = []
+        test_img_label = []
+        for line in train_label_file:
+            train_img_label.append(
+                [os.path.join(train_img_path, line[:-1].split(' ')[0]), int(line[:-1].split(' ')[1]) - 1])
+        for line in test_label_file:
+            test_img_label.append(
+                [os.path.join(test_img_path, line[:-1].split(' ')[0]), int(line[:-1].split(' ')[1]) - 1])
+        self.train_img_label = train_img_label[:data_len]
+        self.test_img_label = test_img_label[:data_len]
+
+    def __getitem__(self, index):
+        if self.is_train:
+            img, target = matplotlib.pyplot.imread(self.train_img_label[index][0]), self.train_img_label[index][1]
+            if len(img.shape) == 2:
+                img = np.stack([img] * 3, 2)
+            img = Image.fromarray(img, mode='RGB')
+            if self.transform is not None:
+                img = self.transform(img)
+
+        else:
+            img, target = matplotlib.pyplot.imread(self.test_img_label[index][0]), self.test_img_label[index][1]
+            if len(img.shape) == 2:
+                img = np.stack([img] * 3, 2)
+            img = Image.fromarray(img, mode='RGB')
+            if self.transform is not None:
+                img = self.transform(img)
+
+        return img, target
+
+    def __len__(self):
+        if self.is_train:
+            return len(self.train_img_label)
+        else:
+            return len(self.test_img_label)

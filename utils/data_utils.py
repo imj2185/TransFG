@@ -7,7 +7,7 @@ import torch
 from torchvision import transforms
 from torch.utils.data import DataLoader, RandomSampler, DistributedSampler, SequentialSampler
 
-from .dataset import CUB, CarsDataset, NABirds, dogs, INat2017
+from .dataset import *
 from .autoaugment import AutoAugImageNetPolicy
 
 logger = logging.getLogger(__name__)
@@ -99,6 +99,39 @@ def get_loader(args):
                                     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
         trainset = INat2017(args.data_root, 'train', train_transform)
         testset = INat2017(args.data_root, 'val', test_transform)
+    elif args.dataset == "air":
+        train_transform = transforms.Compose([transforms.Resize((600, 600), Image.BILINEAR),
+                                              transforms.RandomCrop((args.img_size, args.img_size)),
+                                              transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
+                                              # my add
+                                              transforms.RandomHorizontalFlip(),
+                                              # transforms.RandomVerticalFlip(),
+                                              transforms.ToTensor(),
+                                              # transforms.Normalize([0.8416, 0.867, 0.8233], [0.2852, 0.246, 0.3262])])
+                                              transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+        test_transform = transforms.Compose([
+            transforms.Resize((600, 600), Image.BILINEAR),
+            transforms.CenterCrop((args.img_size, args.img_size)),
+            # transforms.Resize((args.img_size, args.img_size)),
+            transforms.ToTensor(),
+            # transforms.Normalize([0.8416, 0.867, 0.8233], [0.2852, 0.246, 0.3262])])
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+        trainset = FGVC_aircraft(root=args.data_root, is_train=True, transform=train_transform)
+        testset = FGVC_aircraft(root=args.data_root, is_train=False, transform=test_transform)
+    elif args.dataset == "cotton" or args.dataset == "soyloc":
+        train_transform = transforms.Compose([transforms.Resize((600, 600), Image.BILINEAR),
+                                              transforms.RandomCrop((args.img_size, args.img_size)),
+                                              transforms.RandomHorizontalFlip(),
+                                              transforms.ToTensor(),
+                                              transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+                                              ])
+        test_transform = transforms.Compose([
+            transforms.Resize((600, 600), Image.BILINEAR),
+            transforms.CenterCrop((args.img_size, args.img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+        trainset = soyloc_cotton(root=args.data_root, is_train=True, transform=train_transform)
+        testset = soyloc_cotton(root=args.data_root, is_train=False, transform=test_transform)
 
     if args.local_rank == 0:
         torch.distributed.barrier()
@@ -108,7 +141,7 @@ def get_loader(args):
     train_loader = DataLoader(trainset,
                               sampler=train_sampler,
                               batch_size=args.train_batch_size,
-                              num_workers=4,
+                              num_workers=0,
                               drop_last=True,
                               pin_memory=True)
     test_loader = DataLoader(testset,
