@@ -183,6 +183,8 @@ def main():
 
     parser.add_argument("--do_lat_mem_measure", action="store_true", 
                         help="do evo search")
+    parser.add_argument("--do_flops_measure", action="store_true", 
+                        help="do evo search")
     parser.add_argument("--do_onnx", action="store_true", 
                         help="do onnx conversion")
     parser.add_argument("--do_onnx_runtime", action="store_true", 
@@ -211,15 +213,16 @@ def main():
         evalTime = latency(args, model, test_loader)
         print('Evaluation done in total {:.3f} secs ({:.3f} sec per example)'.format(evalTime, evalTime / len(test_loader)))
 
-        # size = (16, 3, args.img_size, args.img_size)
-        # dummy_inputs = (
-        #     torch.ones(size, dtype=torch.float).to(args.device)
-        # )
+    if args.do_flops_measure:
+        size = (8, 3, args.img_size, args.img_size)
+        dummy_inputs = (
+            torch.ones(size, dtype=torch.float).to(args.device)
+        )
 
-        # model.eval()
-        # #model.set_early_exit_th(early_exit_th)
-        # macs = torchprofile.profile_macs(model, args=dummy_inputs)
-        # print("MAC: ", macs)
+        model.eval()
+        #model.set_early_exit_th(early_exit_th)
+        macs = torchprofile.profile_macs(model, args=dummy_inputs)
+        print("MAC: ", macs)
 
 
     if args.do_onnx:
