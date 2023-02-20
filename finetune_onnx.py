@@ -202,7 +202,6 @@ def main():
     # early_exit_th = 0.000124979
     args, model = setup(args)
     if args.do_lat_mem_measure:
-        import torchprofile
         model.set_early_exit_th(args.threshold_value)
 
         with torch.no_grad():
@@ -214,6 +213,7 @@ def main():
         print('Evaluation done in total {:.3f} secs ({:.3f} sec per example)'.format(evalTime, evalTime / len(test_loader)))
 
     if args.do_flops_measure:
+        import torchprofile
         size = (8, 3, args.img_size, args.img_size)
         dummy_inputs = (
             torch.ones(size, dtype=torch.float).to(args.device)
