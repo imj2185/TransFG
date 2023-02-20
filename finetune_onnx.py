@@ -178,7 +178,7 @@ def main():
                         help="Resolution size")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="local_rank for distributed training on gpus")
-    parser.add_argument("--train_batch_size", default=16, type=int,
+    parser.add_argument("--train_batch_size", default=8, type=int,
                         help="Total batch size for training.")
 
     parser.add_argument("--do_lat_mem_measure", action="store_true", 
@@ -187,6 +187,8 @@ def main():
                         help="do onnx conversion")
     parser.add_argument("--do_onnx_runtime", action="store_true", 
                         help="do onnx conversion")
+    parser.add_argument("--threshold_value", default=0.0, type=float,
+                        help="Total batch size for training.")
 
     args = parser.parse_args()
     import torch
@@ -195,11 +197,11 @@ def main():
 
 
     train_loader, test_loader = get_loader(args)
-    early_exit_th = 0.000124979
+    # early_exit_th = 0.000124979
     args, model = setup(args)
     if args.do_lat_mem_measure:
         import torchprofile
-        model.set_early_exit_th(early_exit_th)
+        model.set_early_exit_th(args.threshold_value)
 
         with torch.no_grad():
             val_accuracy, exit_layer = valid(args, model, test_loader)
