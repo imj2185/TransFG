@@ -127,7 +127,7 @@ class VisionTransformer(nn.Module):
     def set_early_exit_th(self, early_exit_th):
         self.transformer.encoder.lte_th = [early_exit_th] * self.num_layers
 
-    def forward(self, x, early_exit=9):
+    def forward(self, x, early_exit=11):
         logits = self.transformer(x, early_exit)
         return logits
 

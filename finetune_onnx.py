@@ -228,7 +228,7 @@ def main():
     if args.do_onnx:
         model.eval()
         import torch.onnx
-        size = (8, 3, args.img_size, args.img_size)
+        size = (1, 3, args.img_size, args.img_size)
         dummy_input_1 = torch.randn(size, dtype=torch.float).to(args.device)
         # threshold = [0.002]
         # dummy_input_2 = torch.Tensor(threshold).to(args.device)
